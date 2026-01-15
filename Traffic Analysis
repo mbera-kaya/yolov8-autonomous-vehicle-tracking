@@ -1,0 +1,149 @@
+from ultralytics import YOLO
+import cv2
+
+# ===============================
+# 1. MODEL VE VİDEO KAYNAĞI
+# ===============================
+# YOLO modelini yükleme ve video dosyasını açma
+model = YOLO("yolov8m.pt")
+cap = cv2.VideoCapture("trafik.mp4")
+
+# ===============================
+# 2. ARAÇ SAYACINI HAZIRLAMA
+# ===============================
+# Her araç türü için sayaç
+counts = {
+    "car": 0,
+    "truck": 0,
+    "motorcycle": 0
+}
+
+# Takip edilen nesneleri saklamak için sözlük
+tracked_objects = {}
+
+# OpenCV penceresi oluşturma
+cv2.namedWindow("Traffic Analysis", cv2.WINDOW_NORMAL)
+
+# ===============================
+# 3. VİDEO KARELERİNİ OKUMA VE İŞLEME
+# ===============================
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    height, width, _ = frame.shape
+    # Araçların sayıldığı çizgi (videonun %80'i)
+    count_line_y = int(height * 0.80)
+
+    # ===============================
+    # 4. NESNE TAKİP VE TANIMA
+    # ===============================
+    results = model.track(
+        frame,
+        persist=True,
+        conf=0.3,
+        iou=0.5,
+        tracker="bytetrack.yaml"
+    )[0]
+
+    # Eğer tespit edilen kutular varsa
+    if results.boxes is not None:
+        for box in results.boxes:
+            if box.id is None:
+                continue
+
+            track_id = int(box.id)
+            cls_id = int(box.cls)
+
+            # Sınıf ID'sine göre araç türünü belirleme
+            if cls_id == 2:
+                label = "car"
+            elif cls_id == 7:
+                label = "truck"
+            elif cls_id == 3:
+                label = "motorcycle"
+            else:
+                continue
+
+            # Kutunun koordinatları ve merkez noktası
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            center_y = (y1 + y2) // 2
+
+            # ===============================
+            # 5. NESNE TAKİBİ VE SAYMA
+            # ===============================
+            if track_id not in tracked_objects:
+                tracked_objects[track_id] = {
+                    "prev_y": center_y,
+                    "counted": False,
+                    "frames_seen": 1
+                }
+            else:
+                tracked_objects[track_id]["frames_seen"] += 1
+
+            prev_y = tracked_objects[track_id]["prev_y"]
+
+            # Sayım koşulu: çizgiyi geçtiyse ve daha önce sayılmamışsa
+            if (
+                prev_y < count_line_y
+                and center_y >= count_line_y
+                and not tracked_objects[track_id]["counted"]
+                and tracked_objects[track_id]["frames_seen"] >= 4
+            ):
+                counts[label] += 1
+                tracked_objects[track_id]["counted"] = True
+
+            # Önceki y koordinatını güncelle
+            tracked_objects[track_id]["prev_y"] = center_y
+
+            # Kutunun rengi (motor için kırmızı, diğerleri turuncu)
+            color = (0, 0, 255) if label == "motorcycle" else (255, 150, 0)
+
+            # Kutuyu çizme ve etiketi ekleme
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                frame,
+                label,
+                (x1, y1 - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2
+            )
+            # Nesnenin merkezine nokta koyma
+            cv2.circle(frame, ((x1 + x2) // 2, center_y), 4, (0, 255, 255), -1)
+
+    # ===============================
+    # 6. SAYIM ÇİZGİSİNİ ÇİZME
+    # ===============================
+    cv2.line(frame, (0, count_line_y), (width, count_line_y), (0, 255, 0), 2)
+
+    # ===============================
+    # 7. SAYIM PANELİ
+    # ===============================
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (20, 20), (330, 160), (0, 0, 0), -1)
+    frame = cv2.addWeighted(overlay, 0.5, frame, 0.5, 0)
+
+    cv2.putText(frame, f"Cars: {counts['car']}", (30, 55),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+    cv2.putText(frame, f"Trucks: {counts['truck']}", (30, 95),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+    cv2.putText(frame, f"Motorcycles: {counts['motorcycle']}", (30, 135),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+
+    # ===============================
+    # 8. KAREYİ GÖSTERME
+    # ===============================
+    cv2.imshow("Traffic Analysis", frame)
+
+    # ESC tuşu ile çıkış
+    if cv2.waitKey(1) == 27:
+        break
+
+# ===============================
+# 9. TEMİZLİK
+# ===============================
+cap.release()
+cv2.destroyAllWindows()
